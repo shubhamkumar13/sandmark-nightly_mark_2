@@ -13,6 +13,7 @@ import pandas as pd
 import pandas.io.json as pdjson
 import seaborn as sns
 from apps import benchstruct
+from multipledispatch import dispatch
 
 def app():
     st.title("Instrumented Pausetimes (sequential)")
@@ -100,7 +101,15 @@ def app():
         # st.write(a)
         (x, y) = a[0], flatten(a[1])
         return (x, y)
+    
+    @dispatch(str)
+    def fmt_variant(file):
+        variant   = file.split('/')[-1].split('_1')[0]
+        commit_id = file.split('/')[-2][:7]
+        date      = file.split('/')[-3].split('_')[0]
+        return str(variant + "_" + date + "_" + commit_id)
 
+    @dispatch(str,str)
     def fmt_variant(commit, variant):
         # st.write(variant.split('_'))
         return (variant.split('_')[0] + '+' + str(commit) + '_' + variant.split('_')[1] + '_' + variant.split('_')[2])
@@ -120,17 +129,8 @@ def app():
     def get_selected_values(n):
         lst = []
         for i in range(n):
-            
-            def check_something():
-                host_val = st.session_state[str(i) + '0_' + benches.config["bench_type"]]
-                timestamp_val = st.session_state[str(i) + '1_' + benches.config["bench_type"]]
-                if (benches.structure[host_val][timestamp_val]).items():
-                    print("right")
-                else:
-                    print("wrong")
-                
             # create the selectbox in columns
-            host_val = containers[i][0].selectbox('hostname', benches.structure.keys(), key = str(i) + '0_' + benches.config["bench_type"], on_change=check_something)
+            host_val = containers[i][0].selectbox('hostname', benches.structure.keys(), key = str(i) + '0_' + benches.config["bench_type"])
             timestamp_val = containers[i][1].selectbox('timestamp', benches.structure[host_val].keys(), key = str(i) + '1_' + benches.config["bench_type"])
             # st.write((benches.structure[host_val][timestamp_val]).items())
             if (benches.structure[host_val][timestamp_val]).items():
@@ -153,4 +153,78 @@ def app():
 
     selected_files = flatten(selected_benches.to_filepath())
 
-    # for i in range(n):
+    def get_dataframe(file):
+        # json to dataframe
+
+        with open(file) as f:
+            data = []
+            for l in f:
+                data.append(json.loads(l))
+            df = pdjson.json_normalize(data)
+        df["variant"] = fmt_variant(file)
+        
+        return df
+
+
+    def get_dataframes_from_files(files):
+        data_frames = [get_dataframe(file) for file in files]
+        df = pd.concat (data_frames, sort=False)
+        df = df.sort_values(['name'])
+        ## Drop some benchmarks
+        df = df[(df.name != 'alt-ergo.fill.why') & #multicore version does not exist
+                (df.name != 'alt-ergo.yyll.why') & #multicore version does not exist
+                (df.name != 'frama-c.slevel') &    #multicore version does not exist
+                (df.name != 'js_of_ocaml.frama-c_byte') &    #multicore version does not exist
+                (df.name != 'cpdf.merge') &
+                (df.name != 'coq.BasicSyntax.v') & (df.name != 'coq.AbstractInterpretation.v') # coq benchmarks not building
+                ]         #Not a macro benchmark. Will be removed from subsequent runs.
+        return df
+    
+    df = get_dataframes_from_files(selected_files)
+    df = df.drop_duplicates(subset=['name', 'variant', 'max_latency'])
+    
+    def plotLatencyAt(df,at,aspect):
+        fdf = df.filter(["name","variant",at + "_latency"])
+        fdf.sort_values(by=[at + '_latency'],inplace=True)
+        fdf[at + "_latency"] = fdf[at + "_latency"] / 1000.0
+        g = sns.catplot (x='name', y=at+'_latency', hue='variant', data = fdf, kind ='bar', aspect=aspect)
+        g.set_xticklabels(rotation=90)
+        g.ax.set_ylabel(at + " latency (microseconds)")
+        g.ax.set_xlabel("Benchmarks")
+        g.ax.set_yscale('log')
+        return g
+
+    st.header("Max Latency")
+    with st.expander("Expand"):
+        st.write(df.filter(["name","variant","max_latency"]))
+
+        max_latency_g = plotLatencyAt(df,"max",4)
+        st.pyplot(max_latency_g)
+    
+    def getLatencyAt(df,percentile,idx):
+        groups = df.groupby('variant')
+        ndfs = []
+        for group in groups:
+            (v,df) = group
+            count = 0
+            for i, row in df.iterrows():
+                df.at[i,percentile+"_latency"] = list(df.at[i,"distr_latency"])[idx]
+            ndfs.append(df)
+        return pd.concat(ndfs)
+
+    df2 = getLatencyAt(df,"99.9",-1)
+    st.header("99.9th Percentile Latency")
+    with st.expander("Expand"):
+        st.write(df2.filter(["name","variant","99.9_latency"]))
+
+        g_99_9 = plotLatencyAt(df2,"99.9",4)
+        st.pyplot(g_99_9)
+    
+    df3 = getLatencyAt(df,"99",-2)
+    st.header("99th Percentile Latency")
+    with st.expander("Expand"):
+        st.write(df3.filter(["name","variant","99_latency"]))
+
+        g_99 = plotLatencyAt(df3,"99",4)
+        st.pyplot(g_99)
+    
