@@ -1,4 +1,6 @@
 """Frameworks for running multiple Streamlit applications as a single app.
+   forked from git@github.com:upraneelnihar/streamlit-multiapps.git
+   Thanks to https://github.com/upraneelnihar
 """
 import streamlit as st
 
